@@ -78,3 +78,15 @@ Thumbs.db
 #######################
 .ipynb_checkpoints
 Untitled.ipynb
+
+# - Ignore PyCharm Editor
+.idea/inspectionProfiles/
+.idea/libraries/
+.idea/misc.xml
+.idea/modules.xml
+.idea/read-ICESat-2.iml
+.idea/vcs.xml
+.idea/workspace.xml
+build/
+dist/
+read_ICESat_2.egg-info/

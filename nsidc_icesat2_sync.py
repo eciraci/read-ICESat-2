@@ -2,6 +2,7 @@
 u"""
 nsidc_icesat2_sync.py
 Written by Tyler Sutterley (09/2019)
+Edited by Enrico Ciraci' (02/2020)
 
 Program to acquire ICESat-2 datafiles from NSIDC server:
 https://wiki.earthdata.nasa.gov/display/EL/How+To+Access+Data+With+Python
@@ -33,6 +34,7 @@ INPUTS:
 COMMAND LINE OPTIONS:
     --help: list the command line options
     -U X, --user=X: username for NASA Earthdata Login
+    -P X, --password=X: password for NASA Earthdata Login
     -D X, --directory: working data directory
     -Y X, --year=X: years to sync separated by commas
     -S X, --subdirectory=X: subdirectories to sync separated by commas
@@ -55,6 +57,7 @@ PYTHON DEPENDENCIES:
         https://github.com/lxml/lxml
 
 UPDATE HISTORY:
+    Updated 02/2020: -P X, --password option added.
     Updated 09/2019: added ssl context to urlopen headers
     Updated 07/2019: added options to sync specific granules, tracks and version
     Updated 06/2019: use strptime to extract last modified time of remote files
@@ -253,6 +256,7 @@ def http_pull_file(fid,remote_file,remote_mtime,local_file,LIST,CLOBBER,MODE):
 def usage():
     print('\nHelp: {0}'.format(os.path.basename(sys.argv[0])))
     print(' -U X, --user=X\t\tUsername for NASA Earthdata Login')
+    print(' -P X, --password=X\t\tPassword for NASA Earthdata Login')
     print(' -D X, --directory=X\tWorking data directory')
     print(' -Y X, --year=X\t\tYears to sync separated by commas')
     print(' -S X, --subdirectory=X\tSubdirectories to sync separated by commas')
@@ -272,13 +276,14 @@ def usage():
 #-- Main program that calls nsidc_icesat2_sync()
 def main():
     #-- Read the system arguments listed after the program
-    long_options=['help','user=','directory=','year=','subdirectory=',
+    long_options=['help','user=','password=','directory=','year=','subdirectory=',
         'release=','version=','granule=','track=','auxiliary','list','log',
         'mode=','clobber']
-    optlist,arglist = getopt.getopt(sys.argv[1:],'hU:D:Y:S:LCM:l',long_options)
+    optlist,arglist = getopt.getopt(sys.argv[1:],'hU:P:D:Y:S:LCM:l',long_options)
 
     #-- command line parameters
     USER = ''
+    PASSWORD = None
     #-- Working data directory
     DIRECTORY = os.getcwd()
     YEARS = None
@@ -303,6 +308,8 @@ def main():
             SUBDIRECTORY = arg.split(',')
         elif opt in ("-U","--user"):
             USER = arg
+        elif opt in ("-P","--password"):
+            PASSWORD = arg
         elif opt in ("-D","--directory"):
             DIRECTORY = os.path.expanduser(arg)
         elif opt in ("--product"):
@@ -356,7 +363,8 @@ def main():
     if not USER:
         USER = builtins.input('Username for {0}: '.format(HOST))
     #-- enter password securely from command-line
-    PASSWORD = getpass.getpass('Password for {0}@{1}: '.format(USER,HOST))
+    if not PASSWORD:
+        PASSWORD = getpass.getpass('Password for {0}@{1}: '.format(USER,HOST))
 
     #-- check internet connection before attempting to run program
     if check_connection():
