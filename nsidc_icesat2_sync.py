@@ -57,7 +57,7 @@ PYTHON DEPENDENCIES:
         https://github.com/lxml/lxml
 
 UPDATE HISTORY:
-    Updated 02/2020: -P X, --password option added.
+    Updated 02/2020: -P X, --password option added. (Enrico Ciraci')
     Updated 09/2019: added ssl context to urlopen headers
     Updated 07/2019: added options to sync specific granules, tracks and version
     Updated 06/2019: use strptime to extract last modified time of remote files
