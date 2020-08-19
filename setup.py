@@ -1,8 +1,23 @@
+import os
 from setuptools import setup, find_packages
+
+# get long_description from README.md
+with open("README.md", "r") as fh:
+    long_description = fh.read()
+
+# get install requirements
+with open('requirements.txt') as fh:
+    install_requires = [line.split().pop(0) for line in fh.read().splitlines()]
+
+# list of all scripts to be included with package
+scripts=[os.path.join('scripts',f) for f in os.listdir('scripts') if f.endswith('.py')]
+
 setup(
     name='read-ICESat-2',
-    version='1.0.0.8',
-    description='Tools for reading and using data from the NASA ICESat-2 mission',
+    version='1.0.0.17',
+    description='Python tools for obtaining and working with elevation data from the NASA ICESat-2 mission',
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     url='https://github.com/tsutterley/read-ICESat-2',
     author='Tyler Sutterley',
     author_email='tsutterl@uw.edu',
@@ -17,5 +32,7 @@ setup(
     ],
     keywords='ICESat-2 laser altimetry, ATLAS',
     packages=find_packages(),
-    install_requires=['numpy','scipy','h5py','matplotlib','cartopy','future','lxml','paramiko','scp'],
+    install_requires=install_requires,
+    scripts=scripts,
+    include_package_data=True,
 )

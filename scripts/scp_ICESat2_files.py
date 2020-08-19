@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 u"""
 scp_ICESat2_files.py
-Written by Tyler Sutterley (09/2019)
+Written by Tyler Sutterley (05/2020)
 Copies ICESat-2 HDF5 data from between a local host and a remote host
 can switch between pushing and pulling to/from remote
     PUSH to remote: s.put(local_file, remote_file)
@@ -38,6 +38,7 @@ PYTHON DEPENDENCIES:
         https://github.com/jbardin/scp.py
 
 UPDATE HISTORY:
+    Updated 05/2020: adjust regular expression to run ATL07 sea ice products
     Updated 09/2019: sort subdirectories.
     Updated 07/2019: using Python3 compliant division.  regex for file versions
     Written 05/2019
@@ -52,6 +53,7 @@ import scp
 import getopt
 import getpass
 import logging
+import builtins
 import paramiko
 import posixpath
 import numpy as np
@@ -223,12 +225,12 @@ def scp_ICESat2_files(client, client_ftp, DIRECTORY, REMOTE, PRODUCT,
     regex_version = '|'.join(['{0:02d}'.format(V) for V in VERSIONS])
     #-- compile regular expression operator for finding subdirectories
     #-- and extracting date information from the subdirectory
-    rx1 = re.compile('(\d+)\.(\d+)\.(\d+)',re.VERBOSE)
+    rx1 = re.compile(r'(\d+)\.(\d+)\.(\d+)',re.VERBOSE)
     #-- compile regular expression operator for extracting data from files
     args = (PRODUCT,regex_track,regex_cycle,regex_granule,RELEASE,regex_version)
-    rx2 = re.compile(('({0})(.*?)_(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})'
-        '(\d{{2}})_({1})({2})({3})_({4})_({5})(.*?).h5$'.format(*args)))
-
+    regex_pattern = (r'(processed_)?({0})(-\d{{2}})?_(\d{{4}})(\d{{2}})(\d{{2}})'
+        r'(\d{{2}})(\d{{2}})(\d{{2}})_({1})({2})({3})_({4})_({5})(.*?).h5$')
+    rx2 = re.compile(regex_pattern.format(*args,re.VERBOSE))
     #-- if pushing from local directory to remote directory
     if PUSH:
         #-- find all local subdirectories
@@ -259,7 +261,7 @@ def scp_ICESat2_files(client, client_ftp, DIRECTORY, REMOTE, PRODUCT,
                 #-- check if data directory exists and recursively create if not
                 if not os.access(local_dir, os.F_OK) and not LIST:
                     os.makedirs(local_dir, MODE)
-                 #-- push file from local to remote
+                #-- push file from local to remote
                 scp_pull_file(client, client_ftp, fi, local_dir, remote_path,
                     CLOBBER=CLOBBER, VERBOSE=VERBOSE, LIST=LIST, MODE=MODE)
 

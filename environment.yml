@@ -1,4 +1,4 @@
-name: example-environment
+name: read-ICESat-2
 channels:
   - conda-forge
 dependencies:
@@ -6,9 +6,12 @@ dependencies:
   - notebook
   - numpy
   - scipy
+  - scikit-learn
   - matplotlib
   - cartopy
-  - h5py
+  - mpi4py
+  - h5py>=2.9=mpi
+  - zarr
   - future
   - lxml
   - paramiko

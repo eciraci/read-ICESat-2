@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 u"""
 nsidc_icesat2_associated.py
-Written by Tyler Sutterley (09/2019)
+Written by Tyler Sutterley (08/2020)
 
 Program to acquire ICESat-2 datafiles from NSIDC server that is
     associated with an input file
@@ -25,6 +25,7 @@ CALLING SEQUENCE:
 COMMAND LINE OPTIONS:
     --help: list the command line options
     -U X, --user=X: username for NASA Earthdata Login
+    -N X, --netrc=X: path to .netrc file for alternative authentication
     -D X, --directory: working data directory
     -P X, --product: associated product to download
         ATL03: Global Geolocated Photon Data
@@ -41,13 +42,20 @@ COMMAND LINE OPTIONS:
 
 PYTHON DEPENDENCIES:
     numpy: Scientific Computing Tools For Python
-        http://www.numpy.org
-        http://www.scipy.org/NumPy_for_Matlab_Users
+        https://numpy.org
+        https://numpy.org/doc/stable/user/numpy-for-matlab-users.html
     lxml: Pythonic XML and HTML processing library using libxml2/libxslt
-        http://lxml.de/
+        https://lxml.de/
         https://github.com/lxml/lxml
 
+PROGRAM DEPENDENCIES:
+    utilities: download and management utilities for syncing files
+
 UPDATE HISTORY:
+    Updated 08/2020: moved urllib opener to utilities. add credential check
+    Updated 05/2020: added option netrc to use alternative authentication
+        adjust regular expression to allow syncing of ATL07 sea ice products
+        adjust regular expression for auxiliary products
     Updated 09/2019: added ssl context to urlopen headers
     Written 08/2019
 """
@@ -56,75 +64,37 @@ from __future__ import print_function
 import sys
 import os
 import re
-import ssl
+import netrc
 import getopt
 import shutil
-import base64
 import getpass
 import builtins
 import posixpath
 import lxml.etree
 import numpy as np
 import calendar, time
+import icesat2_toolkit.utilities
 if sys.version_info[0] == 2:
-    from cookielib import CookieJar
     import urllib2
 else:
-    from http.cookiejar import CookieJar
     import urllib.request as urllib2
 
-#-- PURPOSE: check internet connection
-def check_connection():
-    #-- attempt to connect to https host for NSIDC
-    try:
-        HOST = 'https://n5eil01u.ecs.nsidc.org'
-        urllib2.urlopen(HOST,timeout=20,context=ssl.SSLContext())
-    except urllib2.URLError:
-        raise RuntimeError('Check internet connection')
-    else:
-        return True
-
 #-- PURPOSE: download the ICESat-2 elevation data from NSIDC matching an file
-def nsidc_icesat2_associated(file_list, PRODUCT, USER='', PASSWORD='',
-    DIRECTORY=None, AUXILIARY=False, MODE=0o775):
+def nsidc_icesat2_associated(file_list, PRODUCT, DIRECTORY=None,
+    AUXILIARY=False, MODE=0o775):
 
-    #-- https://docs.python.org/3/howto/urllib2.html#id5
-    #-- create a password manager
-    password_mgr = urllib2.HTTPPasswordMgrWithDefaultRealm()
-    #-- Add the username and password for NASA Earthdata Login system
-    password_mgr.add_password(None, 'https://urs.earthdata.nasa.gov',
-        USER, PASSWORD)
-    #-- Encode username/password for request authorization headers
-    base64_string = base64.b64encode('{0}:{1}'.format(USER,PASSWORD).encode())
     #-- compile HTML parser for lxml
     parser = lxml.etree.HTMLParser()
-    #-- Create cookie jar for storing cookies. This is used to store and return
-    #-- the session cookie given to use by the data server (otherwise will just
-    #-- keep sending us back to Earthdata Login to authenticate).
-    cookie_jar = CookieJar()
-    #-- create "opener" (OpenerDirector instance)
-    opener = urllib2.build_opener(
-        urllib2.HTTPBasicAuthHandler(password_mgr),
-        urllib2.HTTPSHandler(context=ssl.SSLContext()),
-        urllib2.HTTPCookieProcessor(cookie_jar))
-    #-- add Authorization header to opener
-    authorization_header = "Basic {0}".format(base64_string.decode())
-    opener.addheaders = [("Authorization", authorization_header)]
-    #-- Now all calls to urllib2.urlopen use our opener.
-    urllib2.install_opener(opener)
-    #-- All calls to urllib2.urlopen will now use handler
-    #-- Make sure not to include the protocol in with the URL, or
-    #-- HTTPPasswordMgrWithDefaultRealm will be confused.
 
     #-- remote https server for ICESat-2 Data
     HOST = 'https://n5eil01u.ecs.nsidc.org'
     #-- regular expression operator for extracting information from files
-    rx = re.compile('(processed_)?(ATL\d{2})_(\d{4})(\d{2})(\d{2})(\d{2})'
-        '(\d{2})(\d{2})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})(.*?).h5$')
+    rx = re.compile(r'(processed_)?(ATL\d{2})(-\d{2})?_(\d{4})(\d{2})(\d{2})'
+        r'(\d{2})(\d{2})(\d{2})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})(.*?).h5$')
     #-- regular expression pattern for finding specific files
     regex_suffix = '(.*?)' if AUXILIARY else '(h5)'
-    remote_regex_pattern = ('{0}_(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})'
-        '(\d{{2}})_({1})(\d{{2}})({2})_({3})_({4})(.*?).{5}')
+    remote_regex_pattern = (r'{0}(-\d{{2}})?_(\d{{4}})(\d{{2}})(\d{{2}})'
+        r'(\d{{2}})(\d{{2}})(\d{{2}})_({1})({2})({3})_({4})_({5})(.*?).{5}$')
 
     #-- for each input file
     for f in file_list:
@@ -139,13 +109,13 @@ def nsidc_icesat2_associated(file_list, PRODUCT, USER='', PASSWORD='',
             local_dir = os.path.expanduser(DIRECTORY)
 
         #-- extract parameters from ICESat-2 ATLAS HDF5 file name
-        SUB,PRD,YY,MM,DD,HH,MN,SS,TRK,CYCL,GRAN,RL,VERS,AUX=rx.findall(f).pop()
+        SUB,PRD,HEM,YY,MM,DD,HH,MN,SS,TRK,CYC,GRN,RL,VRS,AUX=rx.findall(f).pop()
         #-- set subdirectories for full remote directory (* splat operator)
         sd=['ATLAS','{0}.{1}'.format(PRODUCT,RL),'{0}.{1}.{2}'.format(YY,MM,DD)]
         d = posixpath.join(HOST,*sd)
 
         #-- compile regular expression operator for file parameters
-        args = (PRODUCT,TRK,GRAN,RL,VERS,regex_suffix)
+        args = (PRODUCT,TRK,CYC,GRN,RL,VRS,regex_suffix)
         R1 = re.compile(remote_regex_pattern.format(*args), re.VERBOSE)
 
         #-- find ICESat-2 data file
@@ -192,6 +162,7 @@ def http_pull_file(remote_file,remote_mtime,local_file,MODE):
 def usage():
     print('\nHelp: {0}'.format(os.path.basename(sys.argv[0])))
     print(' -U X, --user=X\t\tUsername for NASA Earthdata Login')
+    print(' -N X, --netrc=X\t\tPath to .netrc file for authentication')
     print(' -D X, --directory=X\tOutput data directory')
     print(' -P X, --product=X\tICESat-2 product to download')
     print(' --auxiliary\t\tSync ICESat-2 auxiliary files for each HDF5 file')
@@ -200,11 +171,13 @@ def usage():
 #-- Main program that calls nsidc_icesat2_associated()
 def main():
     #-- Read the system arguments listed after the program
-    long_options=['help','user=','directory=','product=','auxiliary','mode=']
-    optlist,arglist = getopt.getopt(sys.argv[1:],'hU:D:P:AM:',long_options)
+    long_options=['help','user=','netrc=','directory=','product=','auxiliary',
+        'mode=']
+    optlist,arglist = getopt.getopt(sys.argv[1:],'hU:N:D:P:AM:',long_options)
 
     #-- command line parameters
     USER = ''
+    NETRC = None
     DIRECTORY = None
     PRODUCT = None
     AUXILIARY = False
@@ -216,6 +189,8 @@ def main():
             sys.exit()
         elif opt in ("-U","--user"):
             USER = arg
+        elif opt in ("-N","--netrc"):
+            NETRC = os.path.expanduser(arg)
         elif opt in ("-D","--directory"):
             DIRECTORY = os.path.expanduser(arg)
         elif opt in ("--product"):
@@ -244,16 +219,27 @@ def main():
 
     #-- NASA Earthdata hostname
     HOST = 'urs.earthdata.nasa.gov'
-    #-- check that NASA Earthdata credentials were entered
-    if not USER:
+    #-- get authentication
+    if not USER and not NETRC:
+        #-- check that NASA Earthdata credentials were entered
         USER = builtins.input('Username for {0}: '.format(HOST))
-    #-- enter password securely from command-line
-    PASSWORD = getpass.getpass('Password for {0}@{1}: '.format(USER,HOST))
+        #-- enter password securely from command-line
+        PASSWORD = getpass.getpass('Password for {0}@{1}: '.format(USER,HOST))
+    elif NETRC:
+        USER,LOGIN,PASSWORD = netrc.netrc(NETRC).authenticators(HOST)
+    else:
+        #-- enter password securely from command-line
+        PASSWORD = getpass.getpass('Password for {0}@{1}: '.format(USER,HOST))
+
+    #-- build a urllib opener for NSIDC
+    #-- Add the username and password for NASA Earthdata Login system
+    icesat2_toolkit.utilities.build_opener(USER,PASSWORD)
 
     #-- check internet connection before attempting to run program
-    if check_connection():
-        nsidc_icesat2_associated(arglist, PRODUCT, USER=USER, PASSWORD=PASSWORD,
-            DIRECTORY=DIRECTORY, AUXILIARY=AUXILIARY, MODE=MODE)
+    #-- check NASA earthdata credentials before attempting to run program
+    if icesat2_toolkit.utilities.check_credentials():
+        nsidc_icesat2_associated(arglist, PRODUCT, DIRECTORY=DIRECTORY,
+            AUXILIARY=AUXILIARY, MODE=MODE)
 
 #-- run main program
 if __name__ == '__main__':

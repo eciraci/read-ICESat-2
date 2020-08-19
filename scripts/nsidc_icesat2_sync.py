@@ -35,6 +35,7 @@ COMMAND LINE OPTIONS:
     --help: list the command line options
     -U X, --user=X: username for NASA Earthdata Login
     -P X, --password=X: password for NASA Earthdata Login
+    -N X, --netrc=X: path to .netrc file for alternative authentication
     -D X, --directory: working data directory
     -Y X, --year=X: years to sync separated by commas
     -S X, --subdirectory=X: subdirectories to sync separated by commas
@@ -43,6 +44,9 @@ COMMAND LINE OPTIONS:
     --track=X: ICESat-2 reference ground tracks to sync
     --granule=X: ICESat-2 granule regions to sync
     --auxiliary: Sync ICESat-2 auxiliary files for each HDF5 file
+    -I X, --index=X: Input index of ICESat-2 files to sync
+    -F, --flatten: Do not create subdirectories
+    -P X, --np=X: Number of processes to use in file downloads
     -M X, --mode=X: Local permissions mode of the directories and files synced
     -l, --log: output log of files downloaded
     -L, --list: print files to be transferred, but do not execute transfer
@@ -50,13 +54,25 @@ COMMAND LINE OPTIONS:
 
 PYTHON DEPENDENCIES:
     numpy: Scientific Computing Tools For Python
-        http://www.numpy.org
-        http://www.scipy.org/NumPy_for_Matlab_Users
+        https://numpy.org
+        https://numpy.org/doc/stable/user/numpy-for-matlab-users.html
     lxml: Pythonic XML and HTML processing library using libxml2/libxslt
-        http://lxml.de/
+        https://lxml.de/
         https://github.com/lxml/lxml
 
+PROGRAM DEPENDENCIES:
+    utilities: download and management utilities for syncing files
+
 UPDATE HISTORY:
+    Updated 08/2020: moved urllib opener to utilities. add credential check
+        moved urllib directory listing to utilities
+    Updated 07/2020: added option index to use a list of files to sync
+    Updated 06/2020: added multiprocessing option for parallel download
+    Updated 05/2020: added option netrc to use alternative authentication
+        adjust regular expression to allow syncing of ATL07 sea ice products
+        adjust regular expression for auxiliary products
+    Updated 03/2020: added option flatten to not create subdirectories
+
     Updated 02/2020: -P X, --password option added. (Enrico Ciraci')
     Updated 09/2019: added ssl context to urlopen headers
     Updated 07/2019: added options to sync specific granules, tracks and version
@@ -68,38 +84,27 @@ from __future__ import print_function
 import sys
 import os
 import re
-import ssl
+import time
+import netrc
 import getopt
 import shutil
-import base64
 import getpass
 import builtins
 import posixpath
+import traceback
 import lxml.etree
 import numpy as np
-import calendar, time
+import multiprocessing as mp
+import icesat2_toolkit.utilities
 if sys.version_info[0] == 2:
-    from cookielib import CookieJar
     import urllib2
 else:
-    from http.cookiejar import CookieJar
     import urllib.request as urllib2
-
-#-- PURPOSE: check internet connection
-def check_connection():
-    #-- attempt to connect to https host for NSIDC
-    try:
-        HOST = 'https://n5eil01u.ecs.nsidc.org'
-        urllib2.urlopen(HOST,timeout=20,context=ssl.SSLContext())
-    except urllib2.URLError:
-        raise RuntimeError('Check internet connection')
-    else:
-        return True
 
 #-- PURPOSE: sync the ICESat-2 elevation data from NSIDC
 def nsidc_icesat2_sync(ddir, PRODUCTS, RELEASE, VERSIONS, GRANULES, TRACKS,
-    USER='', PASSWORD='', YEARS=None, SUBDIRECTORY=None, AUXILIARY=False,
-    LOG=False, LIST=False, MODE=None, CLOBBER=False):
+    YEARS=None, SUBDIRECTORY=None, AUXILIARY=False, INDEX=None, FLATTEN=False,
+    LOG=False, LIST=False, PROCESSES=0, MODE=None, CLOBBER=False):
 
     #-- check if directory exists and recursively create if not
     os.makedirs(ddir,MODE) if not os.path.exists(ddir) else None
@@ -115,33 +120,8 @@ def nsidc_icesat2_sync(ddir, PRODUCTS, RELEASE, VERSIONS, GRANULES, TRACKS,
         #-- standard output (terminal output)
         fid = sys.stdout
 
-    #-- https://docs.python.org/3/howto/urllib2.html#id5
-    #-- create a password manager
-    password_mgr = urllib2.HTTPPasswordMgrWithDefaultRealm()
-    #-- Add the username and password for NASA Earthdata Login system
-    password_mgr.add_password(None, 'https://urs.earthdata.nasa.gov',
-        USER, PASSWORD)
-    #-- Encode username/password for request authorization headers
-    base64_string = base64.b64encode('{0}:{1}'.format(USER,PASSWORD).encode())
     #-- compile HTML parser for lxml
     parser = lxml.etree.HTMLParser()
-    #-- Create cookie jar for storing cookies. This is used to store and return
-    #-- the session cookie given to use by the data server (otherwise will just
-    #-- keep sending us back to Earthdata Login to authenticate).
-    cookie_jar = CookieJar()
-    #-- create "opener" (OpenerDirector instance)
-    opener = urllib2.build_opener(
-        urllib2.HTTPBasicAuthHandler(password_mgr),
-        urllib2.HTTPSHandler(context=ssl.SSLContext()),
-        urllib2.HTTPCookieProcessor(cookie_jar))
-    #-- add Authorization header to opener
-    authorization_header = "Basic {0}".format(base64_string.decode())
-    opener.addheaders = [("Authorization", authorization_header)]
-    #-- Now all calls to urllib2.urlopen use our opener.
-    urllib2.install_opener(opener)
-    #-- All calls to urllib2.urlopen will now use handler
-    #-- Make sure not to include the protocol in with the URL, or
-    #-- HTTPPasswordMgrWithDefaultRealm will be confused.
 
     #-- remote https server for ICESat-2 Data
     HOST = 'https://n5eil01u.ecs.nsidc.org'
@@ -151,72 +131,152 @@ def nsidc_icesat2_sync(ddir, PRODUCTS, RELEASE, VERSIONS, GRANULES, TRACKS,
     regex_granule = '|'.join(['{0:02d}'.format(G) for G in GRANULES])
     regex_version = '|'.join(['{0:02d}'.format(V) for V in VERSIONS])
     regex_suffix = '(.*?)' if AUXILIARY else '(h5)'
-    remote_regex_pattern = ('{0}_(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})'
-        '(\d{{2}})_({1})(\d{{2}})({2})_({3})_({4})(.*?).{5}')
+    remote_regex_pattern=(r'{0}(-\d{{2}})?_(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})'
+        r'(\d{{2}})(\d{{2}})_({1})(\d{{2}})({2})_({3})_({4})(.*?).{5}$')
 
     #-- regular expression operator for finding subdirectories
     if SUBDIRECTORY:
         #-- Sync particular subdirectories for product
-        R2 = re.compile('('+'|'.join(SUBDIRECTORY)+')', re.VERBOSE)
+        R2 = re.compile(r'('+'|'.join(SUBDIRECTORY)+')', re.VERBOSE)
     elif YEARS:
         #-- Sync particular years for product
         regex_pattern = '|'.join('{0:d}'.format(y) for y in YEARS)
-        R2 = re.compile('({0}).(\d+).(\d+)'.format(regex_pattern), re.VERBOSE)
+        R2 = re.compile(r'({0}).(\d+).(\d+)'.format(regex_pattern), re.VERBOSE)
     else:
         #-- Sync all available subdirectories for product
-        R2 = re.compile('(\d+).(\d+).(\d+)', re.VERBOSE)
+        R2 = re.compile(r'(\d+).(\d+).(\d+)', re.VERBOSE)
 
-    #-- for each icesat2 product listed
-    for p in PRODUCTS:
-        print('PRODUCT={0}'.format(p), file=fid)
-        #-- input directory for product
-        DIRECTORY = os.path.join(ddir,'{0}.{1}'.format(p,RELEASE))
-        #-- get directories from remote directory (* splat operator)
-        remote_directories = ['ATLAS','{0}.{1}'.format(p,RELEASE)]
-        d = posixpath.join(HOST,*remote_directories)
-        req = urllib2.Request(url=d)
-        #-- compile regular expression operator for product, release and version
-        args = (p,regex_track,regex_granule,RELEASE,regex_version,regex_suffix)
-        R1 = re.compile(remote_regex_pattern.format(*args), re.VERBOSE)
-        #-- read and parse request for subdirectories (find column names)
-        tree = lxml.etree.parse(urllib2.urlopen(req), parser)
-        colnames = tree.xpath('//td[@class="indexcolname"]//a/@href')
-        remote_sub = [sd for sd in colnames if R2.match(sd)]
-        #-- for each remote subdirectory
-        for sd in remote_sub:
+    #-- build list of remote files, remote modification times and local files
+    remote_files = []
+    remote_mtimes = []
+    local_files = []
+    #-- build lists of files or use existing index file
+    if INDEX:
+        #-- read the index file, split at lines and remove all commented lines
+        with open(os.path.expanduser(INDEX),'r') as f:
+            files = [i for i in f.read().splitlines() if re.match('^(?!#)',i)]
+        #-- regular expression operator for extracting information from files
+        rx = re.compile(r'(ATL\d{2})(-\d{2})?_(\d{4})(\d{2})(\d{2})(\d{2})'
+            r'(\d{2})(\d{2})_(\d{4})(\d{2})(\d{2})_(\d{3})_(\d{2})(.*?).h5$')
+        #-- for each line in the index
+        for f in files:
+            #-- extract parameters from ICESat-2 ATLAS HDF5 file
+            PRD,HEM,YY,MM,DD,HH,MN,SS,TRK,CYC,GRN,RL,VRS,AUX=rx.findall(f).pop()
+            #-- get directories from remote directory
+            product_directory = '{0}.{1}'.format(PRD,RL)
+            sd = '{0}.{1}.{2}'.format(YY,MM,DD)
+            PATH = [HOST,'ATLAS',product_directory,sd]
+            remote_dir = posixpath.join(HOST,'ATLAS',product_directory,sd)
+            #-- local directory for product and subdirectory
+            if FLATTEN:
+                local_dir = os.path.expanduser(ddir)
+            else:
+                local_dir = os.path.join(ddir,product_directory,sd)
             #-- check if data directory exists and recursively create if not
-            local_dir = os.path.join(DIRECTORY,sd)
             os.makedirs(local_dir,MODE) if not os.path.exists(local_dir) else None
-            #-- find ICESat-2 data files
-            req=urllib2.Request(url=posixpath.join(d,sd))
-            #-- read and parse request for remote files (columns and dates)
-            tree = lxml.etree.parse(urllib2.urlopen(req), parser)
-            colnames = tree.xpath('//td[@class="indexcolname"]//a/@href')
-            collastmod = tree.xpath('//td[@class="indexcollastmod"]/text()')
+            #-- find ICESat-2 data file to get last modified time
             #-- find matching files (for granule, release, version, track)
-            remote_file_lines=[i for i,f in enumerate(colnames) if R1.match(f)]
-            #-- sync each ICESat-2 data file
-            for i in remote_file_lines:
+            colnames,collastmod = icesat2_toolkit.utilities.nsidc_list(PATH,
+                build=False,timeout=120,parser=parser,pattern=f.strip())
+            #-- print if file was not found
+            if not colnames:
+                print('{0} not found on {1}'.format(f,remote_dir),file=fid)
+            #-- add to lists
+            for colname,remote_mtime in zip(colnames,collastmod):
                 #-- remote and local versions of the file
-                remote_file = posixpath.join(d,sd,colnames[i])
-                local_file = os.path.join(local_dir,colnames[i])
-                #-- get last modified date and convert into unix time
-                LMD = time.strptime(collastmod[i].rstrip(),'%Y-%m-%d %H:%M')
-                remote_mtime = calendar.timegm(LMD)
-                #-- sync ICESat-2 files with NSIDC server
-                http_pull_file(fid, remote_file, remote_mtime, local_file,
-                    LIST, CLOBBER, MODE)
-        #-- close request
-        req = None
+                remote_files.append(posixpath.join(remote_dir,colname))
+                local_files.append(os.path.join(local_dir,colname))
+                remote_mtimes.append(remote_mtime)
+    else:
+        #-- for each ICESat-2 product listed
+        for p in PRODUCTS:
+            print('PRODUCT={0}'.format(p), file=fid)
+            #-- get directories from remote directory
+            product_directory = '{0}.{1}'.format(p,RELEASE)
+            PATH = [HOST,'ATLAS',product_directory]
+            #-- compile regular expression operator
+            args=(p,regex_track,regex_granule,RELEASE,regex_version,regex_suffix)
+            R1 = re.compile(remote_regex_pattern.format(*args), re.VERBOSE)
+            #-- read and parse request for subdirectories (find column names)
+            remote_sub,collastmod = icesat2_toolkit.utilities.nsidc_list(PATH,
+                build=False,timeout=120,parser=parser,pattern=R2,sort=True)
+            #-- for each remote subdirectory
+            for sd in remote_sub:
+                #-- local directory for product and subdirectory
+                if FLATTEN:
+                    local_dir = os.path.expanduser(ddir)
+                else:
+                    local_dir = os.path.join(ddir,product_directory,sd)
+                #-- check if data directory exists and recursively create if not
+                os.makedirs(local_dir,MODE) if not os.path.exists(local_dir) else None
+                #-- find ICESat-2 data files
+                PATH = [HOST,'ATLAS',product_directory,sd]
+                remote_dir = posixpath.join(HOST,'ATLAS',product_directory,sd)
+                #-- find matching files (for granule, release, version, track)
+                colnames,collastmod = icesat2_toolkit.utilities.nsidc_list(PATH,
+                    build=False,timeout=120,parser=parser,pattern=R1,sort=True)
+                #-- build lists of each ICESat-2 data file
+                for colname,remote_mtime in zip(colnames,collastmod):
+                    #-- remote and local versions of the file
+                    remote_files.append(posixpath.join(remote_dir,colname))
+                    local_files.append(os.path.join(local_dir,colname))
+                    remote_mtimes.append(remote_mtime)
+            #-- close request
+            req = None
+
+    #-- sync in series if PROCESSES = 0
+    if (PROCESSES == 0):
+        #-- sync each ICESat-2 data file
+        for i,remote_file in enumerate(remote_files):
+            #-- sync ICESat-2 files with NSIDC server
+            output = http_pull_file(remote_file, remote_mtimes[i],
+                local_files[i], LIST, CLOBBER, MODE)
+            #-- print the output string
+            print(output, file=fid)
+    else:
+        #-- sync in parallel with multiprocessing Pool
+        pool = mp.Pool(processes=PROCESSES)
+        #-- sync each ICESat-2 data file
+        output = []
+        for i,remote_file in enumerate(remote_files):
+            #-- sync ICESat-2 files with NSIDC server
+            args = (remote_file,remote_mtimes[i],local_files[i])
+            kwds = dict(LIST=LIST, CLOBBER=CLOBBER, MODE=MODE)
+            output.append(pool.apply_async(multiprocess_sync,
+                args=args,kwds=kwds))
+        #-- start multiprocessing jobs
+        #-- close the pool
+        #-- prevents more tasks from being submitted to the pool
+        pool.close()
+        #-- exit the completed processes
+        pool.join()
+        #-- print the output string
+        for out in output:
+            print(out.get(), file=fid)
 
     #-- close log file and set permissions level to MODE
     if LOG:
         fid.close()
         os.chmod(os.path.join(ddir,LOGFILE), MODE)
 
+#-- PURPOSE: wrapper for running the sync program in multiprocessing mode
+def multiprocess_sync(remote_file, remote_mtime, local_file,
+    LIST=False, CLOBBER=False, MODE=0o775):
+    try:
+        output = http_pull_file(remote_file,remote_mtime,local_file,
+            LIST,CLOBBER,MODE)
+    except:
+        #-- if there has been an error exception
+        #-- print the type, value, and stack trace of the
+        #-- current exception being handled
+        print('process id {0:d} failed'.format(os.getpid()))
+        traceback.print_exc()
+    else:
+        return output
+
 #-- PURPOSE: pull file from a remote host checking if file exists locally
 #-- and if the remote file is newer than the local file
-def http_pull_file(fid,remote_file,remote_mtime,local_file,LIST,CLOBBER,MODE):
+def http_pull_file(remote_file,remote_mtime,local_file,LIST,CLOBBER,MODE):
     #-- if file exists in file system: check if remote file is newer
     TEST = False
     OVERWRITE = ' (clobber)'
@@ -233,9 +293,8 @@ def http_pull_file(fid,remote_file,remote_mtime,local_file,LIST,CLOBBER,MODE):
         OVERWRITE = ' (new)'
     #-- if file does not exist locally, is to be overwritten, or CLOBBER is set
     if TEST or CLOBBER:
-        #-- Printing files transferred
-        print('{0} --> '.format(remote_file), file=fid)
-        print('\t{0}{1}\n'.format(local_file,OVERWRITE), file=fid)
+        #-- output string for printing files transferred
+        output = '{0} -->\n\t{1}{2}\n'.format(remote_file,local_file,OVERWRITE)
         #-- if executing copy command (not only printing the files)
         if not LIST:
             #-- Create and submit request. There are a wide range of exceptions
@@ -251,12 +310,15 @@ def http_pull_file(fid,remote_file,remote_mtime,local_file,LIST,CLOBBER,MODE):
             #-- keep remote modification time of file and local access time
             os.utime(local_file, (os.stat(local_file).st_atime, remote_mtime))
             os.chmod(local_file, MODE)
+        #-- return the output string
+        return output
 
 #-- PURPOSE: help module to describe the optional input parameters
 def usage():
     print('\nHelp: {0}'.format(os.path.basename(sys.argv[0])))
     print(' -U X, --user=X\t\tUsername for NASA Earthdata Login')
     print(' -P X, --password=X\t\tPassword for NASA Earthdata Login')
+    print(' -N X, --netrc=X\tPath to .netrc file for authentication')
     print(' -D X, --directory=X\tWorking data directory')
     print(' -Y X, --year=X\t\tYears to sync separated by commas')
     print(' -S X, --subdirectory=X\tSubdirectories to sync separated by commas')
@@ -265,6 +327,9 @@ def usage():
     print(' --granule=X\t\tICESat-2 granule regions to sync')
     print(' --track=X\t\tICESat-2 reference ground tracks to sync')
     print(' --auxiliary\t\tSync ICESat-2 auxiliary files for each HDF5 file')
+    print(' -I X, --index=X\t\tInput index of ICESat-2 files to sync')
+    print(' -F, --flatten\t\tDo not create subdirectories')
+    print(' -P X, --np=X\t\tNumber of processes to use in file downloads')
     print(' -M X, --mode=X\t\tPermission mode of directories and files synced')
     print(' -L, --list\t\tOnly print files that are to be transferred')
     print(' -C, --clobber\t\tOverwrite existing data in transfer')
@@ -273,26 +338,32 @@ def usage():
     LOGFILE = 'NSIDC_IceSat-2_sync_{0}.log'.format(today)
     print('    Log file format: {0}\n'.format(LOGFILE))
 
+
 #-- Main program that calls nsidc_icesat2_sync()
 def main():
     #-- Read the system arguments listed after the program
-    long_options=['help','user=','password=','directory=','year=','subdirectory=',
-        'release=','version=','granule=','track=','auxiliary','list','log',
-        'mode=','clobber']
-    optlist,arglist = getopt.getopt(sys.argv[1:],'hU:P:D:Y:S:LCM:l',long_options)
+    short_options = 'hU:P:N:D:Y:S:I:FP:LCM:l'
+    long_options=['help','user=', 'password=','netrc=','directory=','year=','subdirectory=',
+        'release=','version=','granule=','track=','auxiliary','index=',
+        'flatten','np=','list','log','mode=','clobber']
+    optlist,arglist=getopt.getopt(sys.argv[1:],short_options,long_options)
 
     #-- command line parameters
     USER = ''
-    PASSWORD = None
+    NETRC = None
     #-- Working data directory
     DIRECTORY = os.getcwd()
     YEARS = None
     SUBDIRECTORY = None
     VERSIONS = np.arange(1,10)
-    RELEASE = '002'
+    RELEASE = '003'
     GRANULES = np.arange(1,15)
     TRACKS = np.arange(1,1388)
     AUXILIARY = False
+    INDEX = None
+    FLATTEN = False
+    #-- sync in series if processes is 0
+    PROCESSES = 0
     LIST = False
     LOG = False
     #-- permissions mode of the local directories and files (number in octal)
@@ -310,20 +381,26 @@ def main():
             USER = arg
         elif opt in ("-P","--password"):
             PASSWORD = arg
+        elif opt in ("-N","--netrc"):
+            NETRC = os.path.expanduser(arg)\
         elif opt in ("-D","--directory"):
             DIRECTORY = os.path.expanduser(arg)
-        elif opt in ("--product"):
-            PRODUCT = arg
-        elif opt in ("--release"):
-            RELEASE = arg
-        elif opt in ("--version"):
+        elif opt in ("--release",):
+            RELEASE = '{0:03d}'.format(int(arg))
+        elif opt in ("--version",):
             VERSIONS = np.array(arg.split(','), dtype=np.int)
-        elif opt in ("--granule"):
+        elif opt in ("--granule",):
             GRANULES = np.array(arg.split(','), dtype=np.int)
-        elif opt in ("--track"):
+        elif opt in ("--track",):
             TRACKS = np.sort(arg.split(',')).astype(np.int)
-        elif opt in ("--auxiliary"):
+        elif opt in ("--auxiliary",):
             AUXILIARY = True
+        elif opt in ("-I","--index"):
+            INDEX = os.path.expanduser(arg)
+        elif opt in ("-P","--np"):
+            PROCESSES = int(arg)
+        elif opt in ("-F","--flatten"):
+            FLATTEN = True
         elif opt in ("-L","--list"):
             LIST = True
         elif opt in ("-l","--log"):
@@ -346,7 +423,7 @@ def main():
     PROD['ATL13'] = 'Inland Water Surface Height'
 
     #-- enter dataset to transfer as system argument
-    if not arglist:
+    if not INDEX and not arglist:
         for key,val in PROD.items():
             print('{0}: {1}'.format(key, val))
         raise Exception('No System Arguments Listed')
@@ -359,19 +436,32 @@ def main():
 
     #-- NASA Earthdata hostname
     HOST = 'urs.earthdata.nasa.gov'
-    #-- check that NASA Earthdata credentials were entered
-    if not USER:
+    #-- get authentication
+    if not USER and not NETRC:
+        #-- check that NASA Earthdata credentials were entered
         USER = builtins.input('Username for {0}: '.format(HOST))
+    
     #-- enter password securely from command-line
     if not PASSWORD:
         PASSWORD = getpass.getpass('Password for {0}@{1}: '.format(USER,HOST))
+    elif NETRC:
+        USER,LOGIN,PASSWORD = netrc.netrc(NETRC).authenticators(HOST)
+    else:
+        #-- enter password securely from command-line
+        PASSWORD = getpass.getpass('Password for {0}@{1}: '.format(USER,HOST))
+
+    #-- build a urllib opener for NSIDC
+    #-- Add the username and password for NASA Earthdata Login system
+    icesat2_toolkit.utilities.build_opener(USER,PASSWORD)
 
     #-- check internet connection before attempting to run program
-    if check_connection():
+    #-- check NASA earthdata credentials before attempting to run program
+    if icesat2_toolkit.utilities.check_credentials():
         nsidc_icesat2_sync(DIRECTORY, arglist, RELEASE, VERSIONS, GRANULES,
-            TRACKS, USER=USER, PASSWORD=PASSWORD, YEARS=YEARS,
-            SUBDIRECTORY=SUBDIRECTORY, AUXILIARY=AUXILIARY, LOG=LOG,
+            TRACKS, YEARS=YEARS, SUBDIRECTORY=SUBDIRECTORY, AUXILIARY=AUXILIARY,
+            INDEX=INDEX, FLATTEN=FLATTEN, PROCESSES=PROCESSES, LOG=LOG,
             LIST=LIST, MODE=MODE, CLOBBER=CLOBBER)
+
 
 #-- run main program
 if __name__ == '__main__':

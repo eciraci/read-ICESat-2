@@ -1,18 +1,5 @@
-read-icesat-2
-=============
-
-[![Language](https://img.shields.io/badge/python-v3.7-green.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/tsutterley/read-ICESat-2/blob/master/LICENSE)
-[![Documentation Status](https://readthedocs.org/projects/read-icesat-2/badge/?version=latest)](https://read-icesat-2.readthedocs.io/en/latest/?badge=latest)
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/tsutterley/read-ICESat-2/master)
-[![Binder](https://binder.pangeo.io/badge.svg)](https://binder.pangeo.io/v2/gh/tsutterley/read-ICESat-2/master)
-
-Python tools for obtaining and working with elevation data from the NASA ICESat-2 mission  
-https://icesat-2.gsfc.nasa.gov  
-https://icesat-2-scf.gsfc.nasa.gov  
-https://nsidc.org/data/icesat-2/  
-
-### ICESat-2 Data Products
+ICESat-2 Data Products
+======================
 
 | Product | Name | Description |
 | ------- | ---- | ----------- |
@@ -39,30 +26,6 @@ https://nsidc.org/data/icesat-2/
 | **ATL21** | Arctic/Antarctic Gridded Sea Surface Height w/in Sea Ice | Gridded monthly sea surface height inside the sea ice cover.|
 
 ### ICESat-2 Granules
-Each orbit of ICESat-2 data is broken up into 14 granules.  The granule boundaries limit the size of each ATL03 file and simplify the formation of higher level data products.  
-![ICESat-2-global-granules](./icesat2_toolkit/data/ICESat-2_granules_global.png)  
-![ICESat-2-polar-granules](./icesat2_toolkit/data/ICESat-2_granules_polar.png)  
-
-#### Dependencies
- - [numpy: Scientific Computing Tools For Python](https://numpy.org)  
- - [scipy: Scientific Tools for Python](https://docs.scipy.org/doc/)  
- - [h5py: Python interface for Hierarchal Data Format 5 (HDF5)](http://h5py.org)  
- - [zarr: Chunked, compressed, N-dimensional arrays in Python](https://github.com/zarr-developers/zarr-python)  
- - [scikit-learn: Machine Learning in Python](https://scikit-learn.org/stable/index.html)  
- - [lxml: processing XML and HTML in Python](https://pypi.python.org/pypi/lxml)  
- - [paramiko: Native Python SSHv2 protocol library](http://www.paramiko.org/)  
- - [scp: scp module for paramiko](https://github.com/jbardin/scp.py)  
- - [future: Compatibility layer between Python 2 and Python 3](http://python-future.org/)  
- - [mpi4py: Python bindings of the Message Passing Interface (MPI)](https://mpi4py.readthedocs.io/en/stable/)  
-
-#### Download
-The program homepage is:   
-https://github.com/tsutterley/read-icesat-2   
-A zip archive of the latest version is available directly at:    
-https://github.com/tsutterley/read-icesat-2/archive/master.zip  
-
-#### Disclaimer  
-This program is not sponsored or maintained by the Universities Space Research Association (USRA) or NASA.  It is provided here for your convenience but _with no guarantees whatsoever_.  
-
-#### License
-The content of this project is licensed under the [Creative Commons Attribution 4.0 Attribution license](https://creativecommons.org/licenses/by/4.0/) and the source code is licensed under the [MIT license](LICENSE).  
+Each orbit of ICESat-2 data is broken up into 14 granule regions.  The granule boundaries limit the size of each ATL03 file and simplify the formation of higher level data products.  
+![ICESat-2-global-granules](https://raw.githubusercontent.com/tsutterley/read-ICESat-2/master/data/ICESat-2_granules_global.png)  
+![ICESat-2-polar-granules](https://raw.githubusercontent.com/tsutterley/read-ICESat-2/master/data/ICESat-2_granules_polar.png)  
